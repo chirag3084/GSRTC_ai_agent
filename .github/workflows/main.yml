@@ -1,0 +1,45 @@
+name: Daily GSRTC Navsari to Surat Bus Check
+
+on:
+  schedule:
+    # 11:30 AM UTC = 5:00 PM IST every day
+    - cron: '30 11 * * *'
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+
+jobs:
+  capture-and-notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium & OS Dependencies
+        run: playwright install --with-deps chromium
+
+      - name: Run GSRTC Playwright Agent
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python gsrtc_agent.py
+
+      - name: Upload Screenshot as Backup Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gsrtc-screenshot
+          path: screenshot.png
+          retention-days: 7
+          
