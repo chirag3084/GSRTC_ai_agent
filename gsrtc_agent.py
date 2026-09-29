@@ -1,13 +1,23 @@
 import os
-import sys
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from playwright.sync_api import sync_playwright
+from typing import Optional
+from pydantic import BaseModel
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from playwright.async_api import async_playwright
+
+app = FastAPI(title="GSRTC Scraper Service")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SCREENSHOT_PATH = "screenshot.png"
+
+
+class SearchRequest(BaseModel):
+    source: str = "NAVSARI"
+    destination: str = "SURAT"
+
 
 def send_to_telegram(image_path: str, caption: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -15,90 +25,126 @@ def send_to_telegram(image_path: str, caption: str):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    with open(image_path, "rb") as img:
-        response = requests.post(
-            url,
-            data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "parse_mode": "Markdown"},
-            files={"photo": img},
-            timeout=30
-        )
-    if response.ok:
-        print("Successfully sent screenshot to Telegram!")
-    else:
-        print(f"Failed to send to Telegram: {response.text}")
+    try:
+        with open(image_path, "rb") as img:
+            response = requests.post(
+                url,
+                data={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "caption": caption,
+                    "parse_mode": "Markdown",
+                },
+                files={"photo": img},
+                timeout=30,
+            )
+        if response.ok:
+            print("Successfully sent screenshot to Telegram!")
+        else:
+            print(f"Failed to send to Telegram: {response.text}")
+    except Exception as e:
+        print(f"Error dispatching to Telegram: {e}")
 
-def run_agent():
+
+async def run_agent(source: str = "NAVSARI", destination: str = "SURAT"):
     ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
     date_display = ist_now.strftime("%d %b %Y, %I:%M %p IST")
 
-    print(f"Starting GSRTC search at {date_display}...")
+    print(f"Starting GSRTC search ({source} -> {destination}) at {date_display}...")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
             viewport={"width": 1366, "height": 1800},
             timezone_id="Asia/Kolkata",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
-        page = context.new_page()
+        page = await context.new_page()
 
         try:
             # 1. Open GSRTC portal
-            page.goto("https://gsrtc.in/site/", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            await page.goto(
+                "https://gsrtc.in/site/", timeout=60000, wait_until="domcontentloaded"
+            )
+            await page.wait_for_timeout(3000)
 
             # Dismiss promotional modal/popup if present
-            for close_selector in [".close", ".btn-close", "#closeModal", "button[aria-label='Close']"]:
-                if page.locator(close_selector).first.is_visible():
-                    page.locator(close_selector).first.click()
-                    page.wait_for_timeout(500)
+            for close_selector in [
+                ".close",
+                ".btn-close",
+                "#closeModal",
+                "button[aria-label='Close']",
+            ]:
+                close_btn = page.locator(close_selector).first
+                if await close_btn.is_visible():
+                    await close_btn.click()
+                    await page.wait_for_timeout(500)
 
-            # 2. Enter Source: NAVSARI
-            from_input = page.locator("input[placeholder*='From'], #matchFromPlace").first
-            from_input.click()
-            from_input.fill("NAVSARI")
-            page.wait_for_timeout(1200)
-            page.keyboard.press("ArrowDown")
-            page.keyboard.press("Enter")
+            # 2. Enter Source
+            from_input = page.locator(
+                "input[placeholder*='From'], #matchFromPlace"
+            ).first
+            await from_input.click()
+            await from_input.fill(source)
+            await page.wait_for_timeout(1200)
+            await page.keyboard.press("ArrowDown")
+            await page.keyboard.press("Enter")
 
-            # 3. Enter Destination: SURAT
+            # 3. Enter Destination
             to_input = page.locator("input[placeholder*='To'], #matchToPlace").first
-            to_input.click()
-            to_input.fill("SURAT")
-            page.wait_for_timeout(1200)
-            page.keyboard.press("ArrowDown")
-            page.keyboard.press("Enter")
+            await to_input.click()
+            await to_input.fill(destination)
+            await page.wait_for_timeout(1200)
+            await page.keyboard.press("ArrowDown")
+            await page.keyboard.press("Enter")
 
-            # 4. Select Today's Date & Click Search
-            search_btn = page.locator("button:has-text('Search'), input[value*='Search']").first
-            search_btn.click()
+            # 4. Click Search
+            search_btn = page.locator(
+                "button:has-text('Search'), input[value*='Search']"
+            ).first
+            await search_btn.click()
 
             # 5. Wait for results to render and capture screenshot
-            page.wait_for_timeout(7000)
-            page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+            await page.wait_for_timeout(7000)
+            await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
             print("Captured search results screenshot.")
 
             caption = (
-                f"🚌 *GSRTC Bus Schedule: Navsari → Surat*\n"
+                f"🚌 *GSRTC Bus Schedule: {source} → {destination}*\n"
                 f"📅 *Captured:* {date_display}"
             )
             send_to_telegram(SCREENSHOT_PATH, caption)
 
         except Exception as e:
             print(f"Error encountered: {e}")
-            # Still take a diagnostic screenshot so you can see where the page got stuck
-            page.screenshot(path=SCREENSHOT_PATH, full_page=True)
+            await page.screenshot(path=SCREENSHOT_PATH, full_page=True)
             error_caption = (
-                f"⚠️ *GSRTC Agent Warning (Navsari → Surat)*\n"
+                f"⚠️ *GSRTC Agent Warning ({source} → {destination})*\n"
                 f"📅 {date_display}\n"
                 f"Could not complete full form flow, attached current screen state.\n"
                 f"`{str(e)[:120]}`"
             )
             send_to_telegram(SCREENSHOT_PATH, error_caption)
-            sys.exit(1)
 
         finally:
-            browser.close()
+            await browser.close()
 
-if __name__ == "__main__":
-    run_agent()
+
+@app.post("/scrape-gsrtc")
+async def trigger_gsrtc_scrape(
+    request: Optional[SearchRequest] = None, background_tasks: BackgroundTasks = None
+):
+    source = request.source if request else "NAVSARI"
+    dest = request.destination if request else "SURAT"
+
+    # Runs as a background task to prevent the HTTP client connection from timing out
+    background_tasks.add_task(run_agent, source, dest)
+
+    return {
+        "status": "queued",
+        "message": f"Scrape task initiated for {source} -> {dest}.",
+    }
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
