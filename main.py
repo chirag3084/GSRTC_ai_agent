@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from playwright.async_api import async_playwright
+from gsrtc_agent import app
 
 app = FastAPI(title="GSRTC Scraper Service")
 
