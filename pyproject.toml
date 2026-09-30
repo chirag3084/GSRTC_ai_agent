@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "gsrtc_agent:app"
+entrypoint = "main:app"
